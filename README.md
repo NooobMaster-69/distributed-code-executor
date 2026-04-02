@@ -1,8 +1,8 @@
-# Distributed Code Execution Platform
+# ExecVault
 
-A backend platform for executing untrusted code in isolated environments. Submit code via REST API, have it run inside Docker containers (or sandboxed subprocesses), and poll for results.
+A platform for executing untrusted code in isolated environments. Submit code via REST API or the built-in web editor, have it run inside Docker containers (or sandboxed subprocesses), and get results in real-time.
 
-Built with FastAPI, with optional Redis-backed job queues for horizontal scaling.
+Built with FastAPI + React, with optional Redis-backed job queues for horizontal scaling.
 
 ## Table of Contents
 - [Getting Started](#getting-started)
@@ -38,8 +38,8 @@ Built with FastAPI, with optional Redis-backed job queues for horizontal scaling
 
 1. **Clone the repository**
    ```bash
-   git clone https://github.com/NooobMaster-69/distributed-code-executor.git
-   cd distributed-code-executor
+   git clone https://github.com/NooobMaster-69/ExecVault.git
+   cd ExecVault
    ```
 
 2. **Create and activate a virtual environment**
@@ -59,7 +59,16 @@ Built with FastAPI, with optional Redis-backed job queues for horizontal scaling
    python -m api.main
    ```
 
-   Swagger docs will be available at `http://localhost:8000/docs`
+   Swagger API docs at `http://localhost:8000/docs`
+
+5. **Start the frontend** (optional)
+   ```bash
+   cd frontend
+   npm install
+   npm run dev
+   ```
+
+   Web editor at `http://localhost:3000`
 
 ## Features
 
@@ -148,6 +157,12 @@ executor/docker_executor.py  Docker + subprocess execution
 job_queue/queue_manager.py   In-memory and Redis queue/store
 models/job.py                Job dataclass, JobStatus enum
 utils/config.py              Env-based settings
+
+frontend/                    React web editor (Vite + Monaco)
+  src/App.jsx                Main app with execution flow
+  src/api.js                 API client
+  src/components/            CodeEditor, Controls, OutputPanel
+  src/styles.css             Dark theme styles
 
 server.py, client.py         Legacy TCP socket interface
 executor.py, utils.py        Legacy helpers (kept for reference)
@@ -259,5 +274,5 @@ All settings are controlled through environment variables.
 5. Open a Pull Request
 
 ## Contact
-- **Issues**: [GitHub Issues](https://github.com/NooobMaster-69/distributed-code-executor/issues)
+- **Issues**: [GitHub Issues](https://github.com/NooobMaster-69/ExecVault/issues)
 - **GitHub**: [NooobMaster-69](https://github.com/NooobMaster-69)
