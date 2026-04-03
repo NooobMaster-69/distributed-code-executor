@@ -1,12 +1,7 @@
-"""
-models/job.py — Core job data model and status enum.
-"""
-
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
-from typing import Any, Optional
 
 
 class JobStatus(str, Enum):
@@ -19,8 +14,6 @@ class JobStatus(str, Enum):
 
 @dataclass
 class Job:
-    """Represents a single code execution job throughout its lifecycle."""
-
     job_id: str = field(default_factory=lambda: uuid.uuid4().hex[:12])
     code: str = ""
     language: str = "python"
@@ -34,17 +27,15 @@ class Job:
     timed_out: bool = False
 
     created_at: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
-    started_at: Optional[str] = None
-    completed_at: Optional[str] = None
+    started_at: str = None
+    completed_at: str = None
     execution_time_ms: float = 0.0
 
     @property
-    def output(self) -> str:
-        """Primary captured output (stdout)."""
+    def output(self):
         return self.stdout
 
-    def to_dict(self) -> dict[str, Any]:
-        """Serialize to a plain dict for JSON / Redis storage."""
+    def to_dict(self):
         return {
             "job_id": self.job_id,
             "code": self.code,
@@ -63,8 +54,7 @@ class Job:
         }
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> "Job":
-        """Deserialize from dict (e.g. Redis JSON)."""
+    def from_dict(cls, data):
         d = dict(data)
         st = d.get("status", JobStatus.QUEUED.value)
         d["status"] = JobStatus(st) if isinstance(st, str) else st

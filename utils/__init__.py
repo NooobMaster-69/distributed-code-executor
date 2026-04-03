@@ -1,39 +1,24 @@
-"""
-utils package — Shared utilities for the code execution platform.
-
-This __init__.py contains the original socket-protocol utilities (auth, framing,
-validation, logging) so that existing imports like `from utils import send_msg`
-continue to work unchanged.
-"""
-
 import hashlib
 import hmac
 import logging
 import os
 import re
 import struct
-from typing import Optional
 
-# ──────────────────────────────────────────────────────────────
-# Protocol Constants
-# ──────────────────────────────────────────────────────────────
 HEADER_SIZE = 4
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 9900
-MAX_PAYLOAD_BYTES = 5 * 1024 * 1024
+MAX_PAYLOAD = 5 * 1024 * 1024
 RECV_CHUNK = 4096
 AUTH_SECRET = os.getenv("AUTH_SECRET", "s3cur3-sh4red-k3y-2026")
 
 LANGUAGE_MAP = {
-    "python":     {"cmd": ["python", "-u"],                          "ext": ".py"},
-    "node":       {"cmd": ["node"],                                  "ext": ".js"},
-    "bash":       {"cmd": ["bash"],                                  "ext": ".sh"},
-    "powershell": {"cmd": ["powershell", "-NoProfile", "-Command"],  "ext": ".ps1"},
+    "python": {"cmd": ["python", "-u"], "ext": ".py"},
+    "node": {"cmd": ["node"], "ext": ".js"},
+    "bash": {"cmd": ["bash"], "ext": ".sh"},
+    "powershell": {"cmd": ["powershell", "-NoProfile", "-Command"], "ext": ".ps1"},
 }
 
-# ──────────────────────────────────────────────────────────────
-# Dangerous Pattern Blocklist
-# ──────────────────────────────────────────────────────────────
 DANGEROUS_PATTERNS = [
     r"\bshutil\.rmtree\b",
     r"\bos\.remove\b",
@@ -58,46 +43,40 @@ DANGEROUS_PATTERNS = [
     r"\brm\s+-rf\b",
 ]
 
-_COMPILED_PATTERNS = [re.compile(p, re.IGNORECASE) for p in DANGEROUS_PATTERNS]
+compiled_patterns = [re.compile(p, re.IGNORECASE) for p in DANGEROUS_PATTERNS]
 
 
-# ──────────────────────────────────────────────────────────────
-# Logging
-# ──────────────────────────────────────────────────────────────
-def setup_logger(name: str, level: int = logging.DEBUG) -> logging.Logger:
+def setup_logger(name, level=logging.DEBUG):
     logger = logging.getLogger(name)
     if not logger.handlers:
-        handler = logging.StreamHandler()
+        h = logging.StreamHandler()
         fmt = logging.Formatter(
             "[%(asctime)s] %(levelname)-8s | %(name)s | %(message)s",
             datefmt="%Y-%m-%d %H:%M:%S",
         )
-        handler.setFormatter(fmt)
-        logger.addHandler(handler)
+        h.setFormatter(fmt)
+        logger.addHandler(h)
     logger.setLevel(level)
     return logger
 
 
-# ──────────────────────────────────────────────────────────────
-# Length-prefixed framing
-# ──────────────────────────────────────────────────────────────
-def send_msg(sock, data: bytes) -> None:
+def send_msg(sock, data):
     length = len(data)
     header = struct.pack("!I", length)
     sock.sendall(header + data)
 
 
-def recv_msg(sock) -> Optional[bytes]:
-    raw_header = _recv_exact(sock, HEADER_SIZE)
-    if raw_header is None:
+def recv_msg(sock):
+    raw_hdr = recv_exact(sock, HEADER_SIZE)
+    if raw_hdr is None:
         return None
-    (msg_len,) = struct.unpack("!I", raw_header)
-    if msg_len > MAX_PAYLOAD_BYTES:
-        raise ValueError(f"Payload too large: {msg_len} bytes (max {MAX_PAYLOAD_BYTES})")
-    return _recv_exact(sock, msg_len)
+    (msg_len,) = struct.unpack("!I", raw_hdr)
+    if msg_len > MAX_PAYLOAD:
+        raise ValueError(f"Payload too large: {msg_len} bytes (max {MAX_PAYLOAD})")
+    return recv_exact(sock, msg_len)
 
 
-def _recv_exact(sock, n: int) -> Optional[bytes]:
+def recv_exact(sock, n):
     buf = bytearray()
     while len(buf) < n:
         chunk = sock.recv(min(RECV_CHUNK, n - len(buf)))
@@ -107,32 +86,26 @@ def _recv_exact(sock, n: int) -> Optional[bytes]:
     return bytes(buf)
 
 
-# ──────────────────────────────────────────────────────────────
-# Authentication (HMAC-SHA256)
-# ──────────────────────────────────────────────────────────────
-def generate_auth_token(challenge: str, secret: str = AUTH_SECRET) -> str:
+def generate_auth_token(challenge, secret=AUTH_SECRET):
     return hmac.new(
         secret.encode(), challenge.encode(), hashlib.sha256
     ).hexdigest()
 
 
-def verify_auth_token(challenge: str, token: str, secret: str = AUTH_SECRET) -> bool:
+def verify_auth_token(challenge, token, secret=AUTH_SECRET):
     expected = generate_auth_token(challenge, secret)
     return hmac.compare_digest(expected, token)
 
 
-# ──────────────────────────────────────────────────────────────
-# Input Validation
-# ──────────────────────────────────────────────────────────────
-def validate_code(code: str) -> Optional[str]:
-    for pattern in _COMPILED_PATTERNS:
-        match = pattern.search(code)
-        if match:
-            return f"Blocked: potentially dangerous pattern '{match.group()}' detected."
+def validate_code(code):
+    for pat in compiled_patterns:
+        m = pat.search(code)
+        if m:
+            return f"Blocked: potentially dangerous pattern '{m.group()}' detected."
     return None
 
 
-def validate_language(lang: str) -> Optional[str]:
+def validate_language(lang):
     if lang not in LANGUAGE_MAP:
         supported = ", ".join(sorted(LANGUAGE_MAP.keys()))
         return f"Unsupported language '{lang}'. Supported: {supported}"

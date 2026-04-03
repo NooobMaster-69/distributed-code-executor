@@ -1,20 +1,8 @@
-"""
-api/main.py — FastAPI REST server for the distributed code execution system.
-
-POST /execute, GET /status/{job_id}, GET /result/{job_id}, GET /health, GET /stats
-
-Queue + store: in-memory (default) or Redis (REDIS_URL). Worker can run embedded
-(RUN_EMBEDDED_WORKER=true) or as a separate process (false).
-"""
-
-from __future__ import annotations
-
 import logging
 import os
 import sys
 import traceback
 from contextlib import asynccontextmanager
-from typing import Optional
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
@@ -42,7 +30,7 @@ logging.basicConfig(
 log = logging.getLogger("api")
 
 job_queue, job_store = build_queue_backend()
-embedded_worker: Optional[Worker] = None
+embedded_worker = None
 if RUN_EMBEDDED_WORKER:
     embedded_worker = Worker(
         job_queue,
@@ -52,7 +40,7 @@ if RUN_EMBEDDED_WORKER:
 
 
 @asynccontextmanager
-async def lifespan(app: FastAPI):
+async def lifespan(app):
     if embedded_worker:
         embedded_worker.start()
         log.info("Embedded worker started (%d threads)", WORKER_THREADS)
@@ -79,7 +67,7 @@ app.add_middleware(
 
 
 @app.exception_handler(RequestValidationError)
-async def validation_exception_handler(request: Request, exc: RequestValidationError):
+async def validation_handler(request, exc):
     return JSONResponse(
         status_code=422,
         content={"detail": exc.errors(), "message": "Request validation failed"},
@@ -87,7 +75,7 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
 
 
 @app.exception_handler(Exception)
-async def generic_exception_handler(request: Request, exc: Exception):
+async def generic_handler(request, exc):
     if isinstance(exc, HTTPException):
         raise exc
     log.error("Unhandled error on %s: %s", request.url, exc)
@@ -99,9 +87,9 @@ async def generic_exception_handler(request: Request, exc: Exception):
 
 
 class ExecuteRequest(BaseModel):
-    code: str = Field(..., min_length=1, max_length=50_000, description="Source code to execute")
-    language: str = Field("python", description="Language: python, node, bash, powershell")
-    timeout: int = Field(10, ge=1, le=30, description="Execution timeout in seconds")
+    code: str = Field(..., min_length=1, max_length=50_000)
+    language: str = Field("python")
+    timeout: int = Field(10, ge=1, le=30)
 
 
 class ExecuteResponse(BaseModel):
@@ -128,8 +116,8 @@ class ResultResponse(BaseModel):
     execution_time: float
     execution_time_ms: float
     created_at: str
-    started_at: Optional[str]
-    completed_at: Optional[str]
+    started_at: str = None
+    completed_at: str = None
 
 
 class HealthResponse(BaseModel):
@@ -145,7 +133,7 @@ class StatsResponse(BaseModel):
     job_counts: dict
 
 
-def _executor_mode() -> str:
+def get_executor_mode():
     if not embedded_worker:
         return "unknown"
     return "docker" if embedded_worker.executor.docker_available else "subprocess"
@@ -159,13 +147,13 @@ async def execute_code(req: ExecuteRequest):
             language=req.language.lower().strip(),
             timeout=req.timeout,
         )
-    except (TypeError, ValueError) as exc:
-        raise HTTPException(status_code=400, detail=f"Invalid job parameters: {exc}") from exc
+    except (TypeError, ValueError) as e:
+        raise HTTPException(status_code=400, detail=f"Invalid job parameters: {e}") from e
 
     job_store.save(job)
     job_queue.put(job)
 
-    log.info("POST /execute → job %s (%s, %d bytes)", job.job_id, job.language, len(job.code))
+    log.info("POST /execute -> job %s (%s, %d bytes)", job.job_id, job.language, len(job.code))
 
     return ExecuteResponse(
         job_id=job.job_id,
@@ -211,7 +199,7 @@ async def get_result(job_id: str):
 async def health_check():
     backend = "redis" if os.getenv("REDIS_URL", "").strip() else "memory"
     wr = embedded_worker.is_running if embedded_worker else False
-    mode = _executor_mode() if embedded_worker else "n/a (no embedded worker)"
+    mode = get_executor_mode() if embedded_worker else "n/a (no embedded worker)"
     return HealthResponse(
         status="ok",
         worker_running=wr,

@@ -1,11 +1,3 @@
-"""
-executor/docker_executor.py — Code execution with Docker sandbox + subprocess fallback.
-
-Resource limits are read from environment (see utils/config.py).
-"""
-
-from __future__ import annotations
-
 import logging
 import os
 import re
@@ -14,26 +6,25 @@ import subprocess
 import tempfile
 import time
 from datetime import datetime, timezone
-from typing import Optional
 
 from models.job import Job, JobStatus
 
 log = logging.getLogger("executor")
 
-DOCKER_LANGUAGES = {
+DOCKER_LANGS = {
     "python": {"image": "python:3.11-slim", "cmd": ["python", "-u"], "ext": ".py"},
     "node": {"image": "node:20-slim", "cmd": ["node"], "ext": ".js"},
     "bash": {"image": "bash:latest", "cmd": ["bash"], "ext": ".sh"},
 }
 
-SUBPROCESS_LANGUAGES = {
+SUBPROCESS_LANGS = {
     "python": {"cmd": ["python", "-u"], "ext": ".py"},
     "node": {"cmd": ["node"], "ext": ".js"},
     "bash": {"cmd": ["bash"], "ext": ".sh"},
     "powershell": {"cmd": ["powershell", "-NoProfile", "-File"], "ext": ".ps1"},
 }
 
-_DANGEROUS_PATTERNS = [
+BAD_PATTERNS = [
     r"\bshutil\.rmtree\b",
     r"\bos\.remove\b",
     r"\bos\.unlink\b",
@@ -57,10 +48,10 @@ _DANGEROUS_PATTERNS = [
     r"\bformat\s+[a-zA-Z]:",
 ]
 
-_COMPILED = [re.compile(p, re.IGNORECASE) for p in _DANGEROUS_PATTERNS]
+compiled_pats = [re.compile(p, re.IGNORECASE) for p in BAD_PATTERNS]
 
 
-def _docker_resource_args() -> list[str]:
+def get_resource_args():
     try:
         from utils.config import (
             DOCKER_CPU_LIMIT,
@@ -82,58 +73,57 @@ def _docker_resource_args() -> list[str]:
     ]
 
 
-def _validate_code(code: str) -> Optional[str]:
-    for pat in _COMPILED:
+def check_code(code):
+    for pat in compiled_pats:
         m = pat.search(code)
         if m:
             return f"Blocked: potentially dangerous pattern '{m.group()}' detected."
     return None
 
 
-def _validate_language(lang: str, docker: bool) -> Optional[str]:
-    pool = DOCKER_LANGUAGES if docker else SUBPROCESS_LANGUAGES
+def check_language(lang, docker):
+    pool = DOCKER_LANGS if docker else SUBPROCESS_LANGS
     if lang not in pool:
         return f"Unsupported language '{lang}'. Available: {', '.join(sorted(pool))}"
     return None
 
 
 class CodeExecutor:
-    """Executes jobs in Docker (preferred) or local subprocess."""
 
-    def __init__(self) -> None:
-        self.docker_available = self._probe_docker()
+    def __init__(self):
+        self.docker_available = self.probe_docker()
         mode = "Docker" if self.docker_available else "subprocess (fallback)"
-        log.info("CodeExecutor initialized — mode: %s", mode)
+        log.info("CodeExecutor initialized - mode: %s", mode)
 
-    def execute(self, job: Job) -> Job:
+    def execute(self, job):
         job.status = JobStatus.RUNNING
         job.started_at = datetime.now(timezone.utc).isoformat()
 
-        use_docker = self.docker_available and job.language in DOCKER_LANGUAGES
-        lang_err = _validate_language(job.language, use_docker)
+        use_docker = self.docker_available and job.language in DOCKER_LANGS
+        lang_err = check_language(job.language, use_docker)
         if lang_err:
-            return self._fail(job, lang_err)
+            return self.fail(job, lang_err)
 
-        sec_err = _validate_code(job.code)
+        sec_err = check_code(job.code)
         if sec_err:
-            return self._fail(job, sec_err)
+            return self.fail(job, sec_err)
 
         if use_docker:
-            return self._docker_execute(job)
-        return self._subprocess_execute(job)
+            return self.run_docker(job)
+        return self.run_subprocess(job)
 
-    def _docker_execute(self, job: Job) -> Job:
-        cfg = DOCKER_LANGUAGES[job.language]
+    def run_docker(self, job):
+        cfg = DOCKER_LANGS[job.language]
         tmp_dir = None
 
         try:
             tmp_dir = tempfile.mkdtemp(prefix="exec_docker_")
-            filename = f"main{cfg['ext']}"
-            filepath = os.path.join(tmp_dir, filename)
-            with open(filepath, "w", encoding="utf-8") as f:
+            fname = f"main{cfg['ext']}"
+            fpath = os.path.join(tmp_dir, fname)
+            with open(fpath, "w", encoding="utf-8") as f:
                 f.write(job.code)
 
-            res_args = _docker_resource_args()
+            res_args = get_resource_args()
             cmd = [
                 "docker",
                 "run",
@@ -147,21 +137,21 @@ class CodeExecutor:
                 "/code",
                 cfg["image"],
                 *cfg["cmd"],
-                filename,
+                fname,
             ]
 
-            log.info("[%s] Docker run (resource limits from env)", job.job_id)
-            return self._run_process(job, cmd, job.timeout)
+            log.info("[%s] Docker run", job.job_id)
+            return self.run_process(job, cmd, job.timeout)
 
-        except Exception as exc:
+        except Exception as e:
             log.exception("[%s] Docker setup failed", job.job_id)
-            return self._fail(job, f"Docker execution error: {exc}")
+            return self.fail(job, f"Docker execution error: {e}")
         finally:
             if tmp_dir and os.path.exists(tmp_dir):
                 shutil.rmtree(tmp_dir, ignore_errors=True)
 
-    def _subprocess_execute(self, job: Job) -> Job:
-        cfg = SUBPROCESS_LANGUAGES[job.language]
+    def run_subprocess(self, job):
+        cfg = SUBPROCESS_LANGS[job.language]
         tmp_path = None
 
         try:
@@ -171,11 +161,11 @@ class CodeExecutor:
 
             cmd = cfg["cmd"] + [tmp_path]
             log.info("[%s] Subprocess run: %s", job.job_id, " ".join(cmd))
-            return self._run_process(job, cmd, job.timeout, env=self._sandboxed_env())
+            return self.run_process(job, cmd, job.timeout, env=self.safe_env())
 
-        except Exception as exc:
+        except Exception as e:
             log.exception("[%s] Subprocess setup failed", job.job_id)
-            return self._fail(job, f"Subprocess execution error: {exc}")
+            return self.fail(job, f"Subprocess execution error: {e}")
         finally:
             if tmp_path and os.path.exists(tmp_path):
                 try:
@@ -183,14 +173,8 @@ class CodeExecutor:
                 except OSError:
                     pass
 
-    def _run_process(
-        self,
-        job: Job,
-        cmd: list,
-        timeout: int,
-        env: Optional[dict] = None,
-    ) -> Job:
-        start = time.perf_counter()
+    def run_process(self, job, cmd, timeout, env=None):
+        t0 = time.perf_counter()
         try:
             proc = subprocess.run(
                 cmd,
@@ -199,7 +183,7 @@ class CodeExecutor:
                 timeout=timeout,
                 env=env,
             )
-            elapsed = (time.perf_counter() - start) * 1000
+            elapsed = (time.perf_counter() - t0) * 1000
 
             job.stdout = proc.stdout or ""
             job.stderr = proc.stderr or ""
@@ -210,43 +194,40 @@ class CodeExecutor:
 
             log.info("[%s] Completed: exit=%d, %.1fms", job.job_id, proc.returncode, elapsed)
 
-        except subprocess.TimeoutExpired as exc:
-            elapsed = (time.perf_counter() - start) * 1000
+        except subprocess.TimeoutExpired as e:
+            elapsed = (time.perf_counter() - t0) * 1000
             job.timed_out = True
             job.status = JobStatus.TIMEOUT
             job.error = f"Execution timed out after {timeout}s."
             job.execution_time_ms = elapsed
-            if getattr(exc, "stdout", None):
-                job.stdout = exc.stdout if isinstance(exc.stdout, str) else exc.stdout.decode(errors="replace")
-            if getattr(exc, "stderr", None):
-                job.stderr = exc.stderr if isinstance(exc.stderr, str) else exc.stderr.decode(errors="replace")
+            if getattr(e, "stdout", None):
+                job.stdout = e.stdout if isinstance(e.stdout, str) else e.stdout.decode(errors="replace")
+            if getattr(e, "stderr", None):
+                job.stderr = e.stderr if isinstance(e.stderr, str) else e.stderr.decode(errors="replace")
             job.completed_at = datetime.now(timezone.utc).isoformat()
             log.warning("[%s] Timed out after %ds", job.job_id, timeout)
 
         except FileNotFoundError:
-            return self._fail(job, f"Runtime for '{job.language}' not found on PATH.")
+            return self.fail(job, f"Runtime for '{job.language}' not found on PATH.")
 
-        except Exception as exc:
+        except Exception as e:
             log.exception("[%s] Process run failed", job.job_id)
-            return self._fail(job, f"Execution error: {exc}")
+            return self.fail(job, f"Execution error: {e}")
 
         return job
 
-    @staticmethod
-    def _fail(job: Job, error: str) -> Job:
+    def fail(self, job, error):
         job.status = JobStatus.FAILED
         job.error = error
         job.completed_at = datetime.now(timezone.utc).isoformat()
         log.warning("[%s] %s", job.job_id, error)
         return job
 
-    @staticmethod
-    def _sandboxed_env() -> dict:
-        safe = {"PATH", "SYSTEMROOT", "TEMP", "TMP", "HOME", "LANG", "COMSPEC"}
-        return {k: v for k, v in os.environ.items() if k.upper() in safe}
+    def safe_env(self):
+        keep = {"PATH", "SYSTEMROOT", "TEMP", "TMP", "HOME", "LANG", "COMSPEC"}
+        return {k: v for k, v in os.environ.items() if k.upper() in keep}
 
-    @staticmethod
-    def _probe_docker() -> bool:
+    def probe_docker(self):
         try:
             r = subprocess.run(
                 ["docker", "info"],

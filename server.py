@@ -1,17 +1,8 @@
-"""
-server.py — Multi-client code execution server.
-
-Accepts TCP connections, authenticates clients via HMAC-SHA256 challenge/response,
-receives JSON-encoded execution requests, delegates to executor.py, and returns
-structured results — all over a length-prefixed binary protocol.
-"""
-
 import json
 import os
 import socket
 import threading
 import uuid
-from typing import Optional
 
 from utils import (
     DEFAULT_HOST,
@@ -26,60 +17,52 @@ from executor import execute_code
 
 log = setup_logger("server")
 
-# ──────────────────────────────────────────────────────────────
-# Configuration
-# ──────────────────────────────────────────────────────────────
 HOST = os.getenv("EXEC_HOST", DEFAULT_HOST)
 PORT = int(os.getenv("EXEC_PORT", str(DEFAULT_PORT)))
 MAX_CLIENTS = int(os.getenv("EXEC_MAX_CLIENTS", "20"))
-EXECUTION_TIMEOUT = int(os.getenv("EXEC_TIMEOUT", "10"))
+EXEC_TIMEOUT = int(os.getenv("EXEC_TIMEOUT", "10"))
 
 
 class ClientHandler(threading.Thread):
-    """Handle a single client connection on its own thread."""
 
-    def __init__(self, conn: socket.socket, addr: tuple):
+    def __init__(self, conn, addr):
         super().__init__(daemon=True)
         self.conn = conn
         self.addr = addr
-        self.client_id = str(uuid.uuid4())[:8]
-        self.authenticated = False
+        self.cid = str(uuid.uuid4())[:8]
+        self.authed = False
 
-    # ──────── lifecycle ────────
-    def run(self) -> None:
-        tag = f"[{self.client_id}@{self.addr[0]}:{self.addr[1]}]"
+    def run(self):
+        tag = f"[{self.cid}@{self.addr[0]}:{self.addr[1]}]"
         log.info("%s Connected", tag)
         try:
-            if not self._authenticate(tag):
-                self._send_error("Authentication failed.")
+            if not self.do_auth(tag):
+                self.send_err("Authentication failed.")
                 return
 
-            self.authenticated = True
-            log.info("%s Authenticated ✓", tag)
-            self._send_json({"status": "authenticated", "message": "Ready for code execution."})
+            self.authed = True
+            log.info("%s Authenticated", tag)
+            self.send_json({"status": "authenticated", "message": "Ready for code execution."})
 
-            # ── Main request loop ──
             while True:
                 raw = recv_msg(self.conn)
                 if raw is None:
                     log.info("%s Disconnected", tag)
                     break
 
-                self._handle_request(raw, tag)
+                self.process(raw, tag)
 
         except ConnectionResetError:
             log.warning("%s Connection reset", tag)
-        except Exception as exc:
-            log.exception("%s Unexpected error: %s", tag, exc)
+        except Exception as e:
+            log.exception("%s Unexpected error: %s", tag, e)
         finally:
             self.conn.close()
             log.info("%s Socket closed", tag)
 
-    # ──────── authentication ────────
-    def _authenticate(self, tag: str) -> bool:
-        """HMAC-SHA256 challenge/response authentication."""
+    def do_auth(self, tag):
         challenge = uuid.uuid4().hex
-        self._send_json({"type": "auth_challenge", "challenge": challenge})
+        self.send_json({"type": "auth_challenge", "challenge": challenge})
 
         raw = recv_msg(self.conn)
         if raw is None:
@@ -87,67 +70,54 @@ class ClientHandler(threading.Thread):
 
         try:
             msg = json.loads(raw.decode())
-            token = msg.get("token", "")
+            tok = msg.get("token", "")
         except (json.JSONDecodeError, UnicodeDecodeError):
             log.warning("%s Malformed auth response", tag)
             return False
 
-        if not verify_auth_token(challenge, token):
+        if not verify_auth_token(challenge, tok):
             log.warning("%s Invalid auth token", tag)
             return False
 
         return True
 
-    # ──────── request handling ────────
-    def _handle_request(self, raw: bytes, tag: str) -> None:
-        """Parse and dispatch a single execution request."""
+    def process(self, raw, tag):
         try:
-            request = json.loads(raw.decode())
+            req = json.loads(raw.decode())
         except (json.JSONDecodeError, UnicodeDecodeError):
-            self._send_error("Invalid JSON payload.")
+            self.send_err("Invalid JSON payload.")
             return
 
-        code = request.get("code")
+        code = req.get("code")
         if not code or not isinstance(code, str):
-            self._send_error("Missing or invalid 'code' field.")
+            self.send_err("Missing or invalid 'code' field.")
             return
 
-        language = request.get("language", "python").lower().strip()
-        timeout = min(int(request.get("timeout", EXECUTION_TIMEOUT)), 30)  # cap at 30s
+        lang = req.get("language", "python").lower().strip()
+        tout = min(int(req.get("timeout", EXEC_TIMEOUT)), 30)
 
-        log.info(
-            "%s Executing %d bytes of %s (timeout=%ds)",
-            tag,
-            len(code),
-            language,
-            timeout,
-        )
+        log.info("%s Executing %d bytes of %s (timeout=%ds)", tag, len(code), lang, tout)
 
-        result = execute_code(code, language=language, timeout=timeout)
-        self._send_json({"status": "result", **result.to_dict()})
+        res = execute_code(code, language=lang, timeout=tout)
+        self.send_json({"status": "result", **res.to_dict()})
 
-    # ──────── helpers ────────
-    def _send_json(self, obj: dict) -> None:
+    def send_json(self, obj):
         send_msg(self.conn, json.dumps(obj).encode())
 
-    def _send_error(self, message: str) -> None:
-        self._send_json({"status": "error", "error": message})
+    def send_err(self, msg):
+        self.send_json({"status": "error", "error": msg})
 
 
-# ──────────────────────────────────────────────────────────────
-# Server entry point
-# ──────────────────────────────────────────────────────────────
-def start_server(host: str = HOST, port: int = PORT) -> None:
-    """Bind, listen, and dispatch client threads."""
+def start_server(host=HOST, port=PORT):
     srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     srv.bind((host, port))
     srv.listen(MAX_CLIENTS)
 
-    log.info("═" * 55)
+    log.info("=" * 55)
     log.info("  Code Execution Server listening on %s:%d", host, port)
-    log.info("  Max clients: %d | Timeout: %ds", MAX_CLIENTS, EXECUTION_TIMEOUT)
-    log.info("═" * 55)
+    log.info("  Max clients: %d | Timeout: %ds", MAX_CLIENTS, EXEC_TIMEOUT)
+    log.info("=" * 55)
 
     try:
         while True:
@@ -155,7 +125,7 @@ def start_server(host: str = HOST, port: int = PORT) -> None:
             handler = ClientHandler(conn, addr)
             handler.start()
     except KeyboardInterrupt:
-        log.info("Shutting down (Ctrl+C)…")
+        log.info("Shutting down...")
     finally:
         srv.close()
         log.info("Server socket closed.")

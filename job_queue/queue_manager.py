@@ -1,157 +1,129 @@
-"""
-job_queue/queue_manager.py — Pluggable job queue and job store.
-
-- In-memory: deque + threading (single-process, embedded worker).
-- Redis: LPUSH/BRPOP + JSON job documents (horizontally scalable workers).
-
-Set REDIS_URL (e.g. redis://localhost:6379/0) to use Redis.
-"""
-
-from __future__ import annotations
-
 import json
 import logging
 import os
 import threading
 from collections import deque
-from typing import Dict, List, Optional, Tuple, Union
 
 from models.job import Job, JobStatus
 
 log = logging.getLogger("queue_manager")
 
 
-# ──────────────────────────────────────────────────────────────
-# In-memory queue
-# ──────────────────────────────────────────────────────────────
 class JobQueue:
-    """Thread-safe FIFO job queue backed by collections.deque."""
 
-    def __init__(self) -> None:
-        self._deque: deque[Job] = deque()
-        self._condition = threading.Condition()
+    def __init__(self):
+        self.queue = deque()
+        self.cond = threading.Condition()
 
-    def put(self, job: Job) -> None:
-        with self._condition:
-            self._deque.append(job)
-            self._condition.notify()
-            log.info(
-                "Enqueued job %s (%s) — queue size: %d",
-                job.job_id,
-                job.language,
-                len(self._deque),
-            )
+    def put(self, job):
+        with self.cond:
+            self.queue.append(job)
+            self.cond.notify()
+            log.info("Enqueued job %s (%s) - queue size: %d", job.job_id, job.language, len(self.queue))
 
-    def get(self, timeout: float = 1.0) -> Optional[Job]:
-        with self._condition:
-            while not self._deque:
-                if not self._condition.wait(timeout=timeout):
+    def get(self, timeout=1.0):
+        with self.cond:
+            while not self.queue:
+                if not self.cond.wait(timeout=timeout):
                     return None
-            return self._deque.popleft()
+            return self.queue.popleft()
 
     @property
-    def size(self) -> int:
-        with self._condition:
-            return len(self._deque)
+    def size(self):
+        with self.cond:
+            return len(self.queue)
 
 
-# ──────────────────────────────────────────────────────────────
-# In-memory store
-# ──────────────────────────────────────────────────────────────
 class JobStore:
-    """Thread-safe dict-backed job storage."""
 
-    def __init__(self) -> None:
-        self._lock = threading.RLock()
-        self._jobs: Dict[str, Job] = {}
+    def __init__(self):
+        self.lock = threading.RLock()
+        self.jobs = {}
 
-    def save(self, job: Job) -> None:
-        with self._lock:
-            self._jobs[job.job_id] = job
+    def save(self, job):
+        with self.lock:
+            self.jobs[job.job_id] = job
 
-    def get(self, job_id: str) -> Optional[Job]:
-        with self._lock:
-            return self._jobs.get(job_id)
+    def get(self, job_id):
+        with self.lock:
+            return self.jobs.get(job_id)
 
-    def list_by_status(self, status: JobStatus) -> List[Job]:
-        with self._lock:
-            return [j for j in self._jobs.values() if j.status == status]
+    def list_by_status(self, status):
+        with self.lock:
+            return [j for j in self.jobs.values() if j.status == status]
 
-    def count(self) -> Dict[str, int]:
-        with self._lock:
-            counts: Dict[str, int] = {}
-            for job in self._jobs.values():
+    def count(self):
+        with self.lock:
+            counts = {}
+            for job in self.jobs.values():
                 key = job.status.value
                 counts[key] = counts.get(key, 0) + 1
             return counts
 
 
-# ──────────────────────────────────────────────────────────────
-# Redis queue (job_ids); payloads in RedisJobStore
-# ──────────────────────────────────────────────────────────────
 class RedisJobQueue:
-    def __init__(self, client, key_prefix: str, store: "RedisJobStore") -> None:
-        self._r = client
-        self._qkey = f"{key_prefix}queue"
-        self._store = store
+    def __init__(self, client, key_prefix, store):
+        self.r = client
+        self.qkey = f"{key_prefix}queue"
+        self.store = store
 
-    def put(self, job: Job) -> None:
-        self._r.lpush(self._qkey, job.job_id)
-        log.info("Redis enqueued job %s — queue len: %d", job.job_id, self.size)
+    def put(self, job):
+        self.r.lpush(self.qkey, job.job_id)
+        log.info("Redis enqueued job %s - queue len: %d", job.job_id, self.size)
 
-    def get(self, timeout: float = 1.0) -> Optional[Job]:
+    def get(self, timeout=1.0):
         t = int(max(1, min(60, timeout)))
-        item = self._r.brpop(self._qkey, timeout=t)
+        item = self.r.brpop(self.qkey, timeout=t)
         if not item:
             return None
         job_id = item[1]
-        job = self._store.get(job_id)
+        job = self.store.get(job_id)
         if job is None:
             log.error("Missing job payload for queued id %s", job_id)
         return job
 
     @property
-    def size(self) -> int:
-        return int(self._r.llen(self._qkey))
+    def size(self):
+        return int(self.r.llen(self.qkey))
 
 
 class RedisJobStore:
-    def __init__(self, client, key_prefix: str) -> None:
-        self._r = client
-        self._prefix = key_prefix
+    def __init__(self, client, key_prefix):
+        self.r = client
+        self.prefix = key_prefix
 
-    def _job_key(self, job_id: str) -> str:
-        return f"{self._prefix}job:{job_id}"
+    def job_key(self, job_id):
+        return f"{self.prefix}job:{job_id}"
 
-    def _jobs_set_key(self) -> str:
-        return f"{self._prefix}job_ids"
+    def jobs_set_key(self):
+        return f"{self.prefix}job_ids"
 
-    def save(self, job: Job) -> None:
+    def save(self, job):
         payload = json.dumps(job.to_dict(), ensure_ascii=False)
-        self._r.set(self._job_key(job.job_id), payload)
-        self._r.sadd(self._jobs_set_key(), job.job_id)
+        self.r.set(self.job_key(job.job_id), payload)
+        self.r.sadd(self.jobs_set_key(), job.job_id)
 
-    def get(self, job_id: str) -> Optional[Job]:
-        raw = self._r.get(self._job_key(job_id))
+    def get(self, job_id):
+        raw = self.r.get(self.job_key(job_id))
         if not raw:
             return None
         try:
             return Job.from_dict(json.loads(raw))
-        except (json.JSONDecodeError, KeyError, ValueError, TypeError) as exc:
-            log.error("Corrupt job %s: %s", job_id, exc)
+        except (json.JSONDecodeError, KeyError, ValueError, TypeError) as e:
+            log.error("Corrupt job %s: %s", job_id, e)
             return None
 
-    def list_by_status(self, status: JobStatus) -> List[Job]:
-        out: List[Job] = []
-        for jid in self._r.smembers(self._jobs_set_key()):
+    def list_by_status(self, status):
+        out = []
+        for jid in self.r.smembers(self.jobs_set_key()):
             j = self.get(jid)
             if j and j.status == status:
                 out.append(j)
         return out
 
-    def count(self) -> Dict[str, int]:
-        counts: Dict[str, int] = {}
-        for jid in self._r.smembers(self._jobs_set_key()):
+    def count(self):
+        counts = {}
+        for jid in self.r.smembers(self.jobs_set_key()):
             j = self.get(jid)
             if j:
                 key = j.status.value
@@ -159,14 +131,7 @@ class RedisJobStore:
         return counts
 
 
-def build_queue_backend() -> Tuple[
-    Union[JobQueue, RedisJobQueue],
-    Union[JobStore, RedisJobStore],
-]:
-    """
-    In-memory by default. If REDIS_URL is set, use Redis for queue + store
-    so API and worker processes can share state.
-    """
+def build_queue_backend():
     url = os.getenv("REDIS_URL", "").strip()
     if not url:
         return JobQueue(), JobStore()

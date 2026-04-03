@@ -1,10 +1,3 @@
-"""
-client.py — Interactive CLI client for the distributed code execution system.
-
-Connects to the server, completes HMAC-SHA256 authentication, then enters an
-interactive REPL where users can submit code snippets or files for remote execution.
-"""
-
 import json
 import os
 import socket
@@ -21,15 +14,9 @@ from utils import (
 
 log = setup_logger("client")
 
-# ──────────────────────────────────────────────────────────────
-# Configuration
-# ──────────────────────────────────────────────────────────────
 HOST = os.getenv("EXEC_HOST", DEFAULT_HOST)
 PORT = int(os.getenv("EXEC_PORT", str(DEFAULT_PORT)))
 
-# ──────────────────────────────────────────────────────────────
-# Display helpers
-# ──────────────────────────────────────────────────────────────
 CYAN = "\033[96m"
 GREEN = "\033[92m"
 YELLOW = "\033[93m"
@@ -39,92 +26,35 @@ DIM = "\033[2m"
 RESET = "\033[0m"
 
 
-def _banner():
-    print(f"""
-{CYAN}{BOLD}╔══════════════════════════════════════════════════╗
-║       Distributed Code Execution Client          ║
-╚══════════════════════════════════════════════════╝{RESET}
-{DIM}Commands:{RESET}
-  {GREEN}:file <path>{RESET}   — send a file for execution
-  {GREEN}:lang <name>{RESET}   — switch language (python, node, bash, powershell)
-  {GREEN}:timeout <s>{RESET}   — set execution timeout in seconds
-  {GREEN}:quit{RESET}          — disconnect and exit
-  {DIM}(enter a blank line to finish multi-line input){RESET}
-""")
-
-
-def _print_result(data: dict) -> None:
-    """Pretty-print an execution result from the server."""
-    status = data.get("status", "unknown")
-
-    if status == "error":
-        print(f"\n{RED}✖ Server Error:{RESET} {data.get('error', 'Unknown error')}\n")
-        return
-
-    stdout = data.get("stdout", "")
-    stderr = data.get("stderr", "")
-    error = data.get("error", "")
-    exit_code = data.get("exit_code", -1)
-    timed_out = data.get("timed_out", False)
-    duration = data.get("duration_ms", 0)
-    lang = data.get("language", "?")
-
-    print(f"\n{CYAN}{'─' * 50}")
-    print(f" Result  │  lang={lang}  exit={exit_code}  {duration:.1f}ms")
-    print(f"{'─' * 50}{RESET}")
-
-    if timed_out:
-        print(f"{RED}⏱  Execution timed out.{RESET}")
-
-    if error:
-        print(f"{RED}⚠  {error}{RESET}")
-
-    if stdout:
-        print(f"{GREEN}stdout:{RESET}")
-        print(stdout.rstrip())
-
-    if stderr:
-        print(f"{YELLOW}stderr:{RESET}")
-        print(stderr.rstrip())
-
-    print(f"{CYAN}{'─' * 50}{RESET}\n")
-
-
-# ──────────────────────────────────────────────────────────────
-# Core client logic
-# ──────────────────────────────────────────────────────────────
 class ExecutionClient:
-    """Manages connection, auth, and request/response cycle."""
 
-    def __init__(self, host: str = HOST, port: int = PORT):
+    def __init__(self, host=HOST, port=PORT):
         self.host = host
         self.port = port
         self.sock = None
-        self.language = "python"
-        self.timeout = 10
+        self.lang = "python"
+        self.tout = 10
 
-    # ──────── connection ────────
-    def connect(self) -> bool:
+    def connect(self):
         try:
             self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             self.sock.connect((self.host, self.port))
             log.info("Connected to %s:%d", self.host, self.port)
             return True
         except ConnectionRefusedError:
-            log.error("Connection refused — is the server running on %s:%d?", self.host, self.port)
+            log.error("Connection refused - is the server running on %s:%d?", self.host, self.port)
             return False
-        except Exception as exc:
-            log.error("Connection failed: %s", exc)
+        except Exception as e:
+            log.error("Connection failed: %s", e)
             return False
 
-    def close(self) -> None:
+    def close(self):
         if self.sock:
             self.sock.close()
             self.sock = None
             log.info("Disconnected.")
 
-    # ──────── authentication ────────
-    def authenticate(self) -> bool:
+    def authenticate(self):
         raw = recv_msg(self.sock)
         if raw is None:
             log.error("No auth challenge received.")
@@ -146,18 +76,17 @@ class ExecutionClient:
 
         resp = json.loads(raw.decode())
         if resp.get("status") == "authenticated":
-            log.info("Authenticated ✓")
+            log.info("Authenticated successfully")
             return True
 
         log.error("Authentication failed: %s", resp.get("error", "unknown"))
         return False
 
-    # ──────── execution ────────
-    def send_code(self, code: str):
+    def send_code(self, code):
         payload = {
             "code": code,
-            "language": self.language,
-            "timeout": self.timeout,
+            "language": self.lang,
+            "timeout": self.tout,
         }
         send_msg(self.sock, json.dumps(payload).encode())
 
@@ -168,42 +97,87 @@ class ExecutionClient:
 
         return json.loads(raw.decode())
 
-    # ──────── REPL ────────
-    def repl(self) -> None:
-        _banner()
+    def show_banner(self):
+        print(f"""
+{CYAN}{BOLD}+--------------------------------------------------+
+|       Distributed Code Execution Client          |
++--------------------------------------------------+{RESET}
+{DIM}Commands:{RESET}
+  {GREEN}:file <path>{RESET}   - send a file for execution
+  {GREEN}:lang <name>{RESET}   - switch language (python, node, bash, powershell)
+  {GREEN}:timeout <s>{RESET}   - set execution timeout in seconds
+  {GREEN}:quit{RESET}          - disconnect and exit
+  {DIM}(enter a blank line to finish multi-line input){RESET}
+""")
+
+    def show_result(self, data):
+        st = data.get("status", "unknown")
+
+        if st == "error":
+            print(f"\n{RED}Server Error:{RESET} {data.get('error', 'Unknown error')}\n")
+            return
+
+        out = data.get("stdout", "")
+        err = data.get("stderr", "")
+        error = data.get("error", "")
+        exitcode = data.get("exit_code", -1)
+        timedout = data.get("timed_out", False)
+        dur = data.get("duration_ms", 0)
+        lang = data.get("language", "?")
+
+        print(f"\n{CYAN}{'-' * 50}")
+        print(f" Result  |  lang={lang}  exit={exitcode}  {dur:.1f}ms")
+        print(f"{'-' * 50}{RESET}")
+
+        if timedout:
+            print(f"{RED}Execution timed out.{RESET}")
+
+        if error:
+            print(f"{RED}{error}{RESET}")
+
+        if out:
+            print(f"{GREEN}stdout:{RESET}")
+            print(out.rstrip())
+
+        if err:
+            print(f"{YELLOW}stderr:{RESET}")
+            print(err.rstrip())
+
+        print(f"{CYAN}{'-' * 50}{RESET}\n")
+
+    def repl(self):
+        self.show_banner()
 
         while True:
             try:
-                code = self._read_input()
+                code = self.read_input()
                 if code is None:
-                    break  # :quit
+                    break
                 if not code.strip():
                     continue
 
-                result = self.send_code(code)
-                if result is None:
+                res = self.send_code(code)
+                if res is None:
                     print(f"{RED}Lost connection to server.{RESET}")
                     break
-                _print_result(result)
+                self.show_result(res)
 
             except KeyboardInterrupt:
-                print(f"\n{DIM}(Ctrl+C — type :quit to exit){RESET}")
-            except Exception as exc:
-                log.error("Client error: %s", exc)
+                print(f"\n{DIM}(Ctrl+C - type :quit to exit){RESET}")
+            except Exception as e:
+                log.error("Client error: %s", e)
 
-    def _read_input(self):
-        """Read multi-line input, or handle : commands."""
-        prompt = f"{GREEN}{self.language}{RESET}» "
+    def read_input(self):
+        prompt = f"{GREEN}{self.lang}{RESET}> "
         try:
-            first_line = input(prompt)
+            first = input(prompt)
         except EOFError:
             return None
 
-        # ── : commands ──
-        if first_line.startswith(":"):
-            return self._handle_meta(first_line)
+        if first.startswith(":"):
+            return self.handle_cmd(first)
 
-        lines = [first_line]
+        lines = [first]
         while True:
             try:
                 line = input(f"{DIM}...{RESET} ")
@@ -215,7 +189,7 @@ class ExecutionClient:
 
         return "\n".join(lines)
 
-    def _handle_meta(self, cmd: str):
+    def handle_cmd(self, cmd):
         parts = cmd.split(maxsplit=1)
         directive = parts[0].lower()
         arg = parts[1].strip() if len(parts) > 1 else ""
@@ -225,31 +199,30 @@ class ExecutionClient:
 
         if directive == ":lang":
             if arg:
-                self.language = arg
+                self.lang = arg
                 print(f"{DIM}Language set to: {arg}{RESET}")
             else:
-                print(f"{DIM}Current language: {self.language}{RESET}")
+                print(f"{DIM}Current language: {self.lang}{RESET}")
             return ""
 
         if directive == ":timeout":
             if arg.isdigit():
-                self.timeout = int(arg)
-                print(f"{DIM}Timeout set to: {self.timeout}s{RESET}")
+                self.tout = int(arg)
+                print(f"{DIM}Timeout set to: {self.tout}s{RESET}")
             else:
-                print(f"{DIM}Current timeout: {self.timeout}s{RESET}")
+                print(f"{DIM}Current timeout: {self.tout}s{RESET}")
             return ""
 
         if directive == ":file":
             if not arg:
                 print(f"{RED}Usage: :file <path>{RESET}")
                 return ""
-            return self._load_file(arg)
+            return self.load_file(arg)
 
         print(f"{YELLOW}Unknown command: {directive}{RESET}")
         return ""
 
-    @staticmethod
-    def _load_file(path: str) -> str:
+    def load_file(self, path):
         path = os.path.expanduser(path)
         if not os.path.isfile(path):
             print(f"{RED}File not found: {path}{RESET}")
@@ -260,9 +233,6 @@ class ExecutionClient:
         return code
 
 
-# ──────────────────────────────────────────────────────────────
-# Entry point
-# ──────────────────────────────────────────────────────────────
 def main():
     client = ExecutionClient()
 
