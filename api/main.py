@@ -90,6 +90,7 @@ class ExecuteRequest(BaseModel):
     code: str = Field(..., min_length=1, max_length=50_000)
     language: str = Field("python")
     timeout: int = Field(10, ge=1, le=30)
+    user_input: str = Field("", max_length=50_000)
 
 
 class ExecuteResponse(BaseModel):
@@ -146,6 +147,7 @@ async def execute_code(req: ExecuteRequest):
             code=req.code,
             language=req.language.lower().strip(),
             timeout=req.timeout,
+            user_input=req.user_input,
         )
     except (TypeError, ValueError) as e:
         raise HTTPException(status_code=400, detail=f"Invalid job parameters: {e}") from e

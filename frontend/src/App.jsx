@@ -15,6 +15,7 @@ export default function App() {
   const [language, setLanguage] = useState('python');
   const [code, setCode] = useState(DEFAULT_CODE.python);
   const [timeout, setTimeout_] = useState(10);
+  const [userInput, setUserInput] = useState('');
   const [status, setStatus] = useState(null);
   const [result, setResult] = useState(null);
   const [error, setError] = useState(null);
@@ -44,7 +45,7 @@ export default function App() {
     clearPoll();
 
     try {
-      const data = await submitCode(code, language, timeout);
+      const data = await submitCode(code, language, timeout, userInput);
       const jobId = data.job_id;
       setStatus('QUEUED');
 
@@ -137,6 +138,28 @@ export default function App() {
             code={code}
             language={language}
             onChange={setCode}
+          />
+          <div className="section-header" style={{ minHeight: '40px', borderTop: '1px solid var(--border)' }}>
+            <span className="section-title">Input (stdin)</span>
+          </div>
+          <textarea
+            value={userInput}
+            onChange={(e) => setUserInput(e.target.value)}
+            placeholder="Provide standard input here..."
+            spellCheck="false"
+            style={{
+              height: '120px',
+              width: '100%',
+              background: 'transparent',
+              color: 'var(--text-primary)',
+              border: 'none',
+              padding: '16px',
+              fontFamily: 'var(--font-mono)',
+              fontSize: '13px',
+              resize: 'none',
+              outline: 'none',
+              flexShrink: 0,
+            }}
           />
         </div>
 

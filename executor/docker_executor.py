@@ -127,6 +127,7 @@ class CodeExecutor:
             cmd = [
                 "docker",
                 "run",
+                "-i",
                 "--rm",
                 *res_args,
                 "--network=none",
@@ -141,7 +142,7 @@ class CodeExecutor:
             ]
 
             log.info("[%s] Docker run", job.job_id)
-            return self.run_process(job, cmd, job.timeout)
+            return self.run_process(job, cmd, job.timeout, input_data=job.user_input)
 
         except Exception as e:
             log.exception("[%s] Docker setup failed", job.job_id)
@@ -161,7 +162,7 @@ class CodeExecutor:
 
             cmd = cfg["cmd"] + [tmp_path]
             log.info("[%s] Subprocess run: %s", job.job_id, " ".join(cmd))
-            return self.run_process(job, cmd, job.timeout, env=self.safe_env())
+            return self.run_process(job, cmd, job.timeout, env=self.safe_env(), input_data=job.user_input)
 
         except Exception as e:
             log.exception("[%s] Subprocess setup failed", job.job_id)
@@ -173,11 +174,12 @@ class CodeExecutor:
                 except OSError:
                     pass
 
-    def run_process(self, job, cmd, timeout, env=None):
+    def run_process(self, job, cmd, timeout, env=None, input_data=""):
         t0 = time.perf_counter()
         try:
             proc = subprocess.run(
                 cmd,
+                input=input_data,
                 capture_output=True,
                 text=True,
                 timeout=timeout,

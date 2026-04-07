@@ -1,10 +1,10 @@
 const API_BASE = '';
 
-export async function submitCode(code, language, timeout) {
+export async function submitCode(code, language, timeout, user_input) {
   const res = await fetch(`${API_BASE}/execute`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ code, language, timeout }),
+    body: JSON.stringify({ code, language, timeout, user_input }),
   });
 
   if (!res.ok) {

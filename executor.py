@@ -47,7 +47,7 @@ class Executor:
         keep = {"PATH", "SYSTEMROOT", "TEMP", "TMP", "HOME", "LANG", "COMSPEC"}
         return {k: v for k, v in os.environ.items() if k.upper() in keep}
 
-    def run(self, code, language="python", timeout=DEFAULT_TIMEOUT):
+    def run(self, code, language="python", timeout=DEFAULT_TIMEOUT, user_input=""):
         result = ExecutionResult(language=language)
 
         lang_err = validate_language(language)
@@ -77,7 +77,8 @@ class Executor:
 
             t0 = time.perf_counter()
             proc = subprocess.run(
-                cmd,
+    cmd,
+                input=user_input,   # 🔥 THIS ENABLES input()
                 capture_output=True,
                 text=True,
                 timeout=timeout,

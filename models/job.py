@@ -18,6 +18,7 @@ class Job:
     code: str = ""
     language: str = "python"
     timeout: int = 10
+    user_input: str = ""
     status: JobStatus = JobStatus.QUEUED
 
     stdout: str = ""
@@ -41,6 +42,7 @@ class Job:
             "code": self.code,
             "language": self.language,
             "timeout": self.timeout,
+            "user_input": self.user_input,
             "status": self.status.value if isinstance(self.status, JobStatus) else str(self.status),
             "stdout": self.stdout,
             "stderr": self.stderr,
@@ -63,6 +65,7 @@ class Job:
             code=str(d.get("code", "")),
             language=str(d.get("language", "python")),
             timeout=int(d.get("timeout", 10)),
+            user_input=str(d.get("user_input", "")),
             status=d["status"],
             stdout=str(d.get("stdout", "")),
             stderr=str(d.get("stderr", "")),
